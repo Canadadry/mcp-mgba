@@ -15,10 +15,34 @@
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
 #include <mgba/debugger/debugger.h>
+#include <mgba/internal/arm/decoder.h>
 
 /* Single-session state: one loaded core + its attached debugger, at most. */
 static struct mCore* g_core = NULL;
 static struct mDebugger g_debugger;
+
+/* ---- run_until_breakpoint's stop-capture state ----
+ * mDebuggerEnter() (called by mDebuggerPlatform when a breakpoint/watchpoint
+ * fires - see arm/debugger/debugger.c and arm/debugger/memory-debugger.c)
+ * sets g_debugger.state to DEBUGGER_PAUSED *and* invokes
+ * g_debugger.entered(), which this shim points at
+ * mcbamgba_capture_debugger_entry() below. That's the only hook this shim
+ * needs: it captures the reason + mDebuggerEntryInfo here so
+ * mcbamgba_run_until_breakpoint() can report exactly what fired, right after
+ * detecting the state flip. */
+static enum mDebuggerEntryReason g_entry_reason;
+static struct mDebuggerEntryInfo g_entry_info;
+
+static void mcbamgba_capture_debugger_entry(struct mDebugger* debugger, enum mDebuggerEntryReason reason,
+                                             struct mDebuggerEntryInfo* info) {
+	(void) debugger;
+	g_entry_reason = reason;
+	if (info) {
+		g_entry_info = *info;
+	} else {
+		memset(&g_entry_info, 0, sizeof(g_entry_info));
+	}
+}
 
 /* The core's video renderer draws into this buffer whenever it runs
  * (runFrame/step/runLoop) - wired up via setVideoBuffer() before reset() in
@@ -85,6 +109,7 @@ int mcbamgba_load_rom(const char* path) {
 	g_core = core;
 	memset(&g_debugger, 0, sizeof(g_debugger));
 	mDebuggerAttach(&g_debugger, g_core);
+	g_debugger.entered = mcbamgba_capture_debugger_entry;
 
 	return MCBAMGBA_OK;
 }
@@ -313,6 +338,132 @@ int mcbamgba_write_register(const char* name, uint32_t value) {
 		return MCBAMGBA_ERR_NOT_FOUND;
 	}
 	return MCBAMGBA_OK;
+}
+
+/* ---- run_until_breakpoint ---- */
+
+int mcbamgba_run_until_breakpoint(int64_t max_instructions, mcbamgba_run_result_t* out_result) {
+	if (!g_core || !g_debugger.platform) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	if (!out_result) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+	if (max_instructions <= 0) {
+		max_instructions = MCBAMGBA_DEFAULT_MAX_INSTRUCTIONS;
+	}
+
+	memset(out_result, 0, sizeof(*out_result));
+
+	/* Reset capture state and the debugger's own state so a stop left over
+	 * from an earlier call (or from breakpoints/watchpoints never having
+	 * fired at all) can't be mistaken for one that happens here. */
+	g_debugger.state = DEBUGGER_RUNNING;
+	bool hit = false;
+	int64_t executed = 0;
+	for (; executed < max_instructions; ++executed) {
+		g_core->step(g_core);
+		/* Watchpoints fire *during* step() itself, via the memory-access
+		 * shim installed by mcbamgba_set_watchpoint() (see
+		 * arm/debugger/memory-debugger.c) - if one already flipped the
+		 * debugger to PAUSED this instruction, don't also run the
+		 * breakpoint check below: it would risk overwriting the just
+		 * captured watchpoint info with an unrelated breakpoint match on
+		 * the same instruction. */
+		if (g_debugger.state != DEBUGGER_PAUSED) {
+			g_debugger.platform->checkBreakpoints(g_debugger.platform);
+		}
+		if (g_debugger.state == DEBUGGER_PAUSED) {
+			hit = true;
+			++executed; /* count the instruction that triggered the stop */
+			break;
+		}
+	}
+	g_debugger.state = DEBUGGER_RUNNING;
+
+	if (hit) {
+		out_result->instructions_run = executed;
+		out_result->point_id = (int64_t) g_entry_info.pointId;
+		out_result->address = g_entry_info.address;
+		if (g_entry_reason == DEBUGGER_ENTER_WATCHPOINT) {
+			out_result->stop_reason = MCBAMGBA_STOP_WATCHPOINT;
+			out_result->watch_type = (int32_t) g_entry_info.type.wp.watchType;
+			out_result->old_value = g_entry_info.type.wp.oldValue;
+			out_result->new_value = g_entry_info.type.wp.newValue;
+		} else {
+			/* DEBUGGER_ENTER_BREAKPOINT is the only other reason this shim's
+			 * debugger setup can produce - no software breakpoints, stack
+			 * trace mode, or illegal-op traps are ever enabled here. */
+			out_result->stop_reason = MCBAMGBA_STOP_BREAKPOINT;
+		}
+	} else {
+		out_result->stop_reason = MCBAMGBA_STOP_CAP;
+		out_result->point_id = -1;
+		out_result->instructions_run = max_instructions;
+		uint32_t pc = 0;
+		mcbamgba_read_register("pc", &pc);
+		out_result->address = pc;
+	}
+
+	return MCBAMGBA_OK;
+}
+
+/* ---- Disassembly ---- */
+
+int32_t mcbamgba_disassemble(uint32_t address, int32_t count, mcbamgba_instruction_t* out) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	if (!out || count <= 0) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+
+	/* This shim's flat mCore interface has no accessor for a live ARMCore*,
+	 * so decode without one (ARMDisassemble treats a NULL `core` as "don't
+	 * dereference memory for a load-literal value comment" - see
+	 * arm/decoder.c's _decodeMemory - so output stays correct, just without
+	 * that comment) and without a symbol table (no ELF/symbol loading is in
+	 * scope for this milestone - see shim.h). Mode is read once from the
+	 * live cpsr's Thumb bit and applied to the whole requested range, since
+	 * this shim has no per-address mode information for arbitrary
+	 * addresses (see mcbamgba_disassemble's doc comment in shim.h). */
+	uint32_t cpsr = 0;
+	mcbamgba_read_register("cpsr", &cpsr);
+	bool thumb = (cpsr & 0x20) != 0; /* PSR bit 5 is the ARM/Thumb (T) bit */
+
+	uint32_t addr = address;
+	int32_t written = 0;
+	for (; written < count; ++written) {
+		struct ARMInstructionInfo info;
+		mcbamgba_instruction_t* entry = &out[written];
+		memset(entry, 0, sizeof(*entry));
+		entry->address = addr;
+
+		uint32_t pc_field; /* the "PC" ARMDisassemble expects: the pipelined
+		                     * fetch address (instruction address + 2x its
+		                     * size), matching what a live CPU would report
+		                     * while executing this instruction - needed to
+		                     * resolve PC-relative branches/literals. */
+		if (thumb) {
+			uint16_t opcode = g_core->busRead16(g_core, addr);
+			ARMDecodeThumb(opcode, &info);
+			entry->opcode = opcode;
+			entry->size = 2;
+			pc_field = addr + 4;
+		} else {
+			uint32_t opcode = g_core->busRead32(g_core, addr);
+			ARMDecodeARM(opcode, &info);
+			entry->opcode = opcode;
+			entry->size = 4;
+			pc_field = addr + 8;
+		}
+
+		ARMDisassemble(&info, NULL, NULL, pc_field, entry->text, MCBAMGBA_DISASM_TEXT_MAX);
+		entry->text[MCBAMGBA_DISASM_TEXT_MAX - 1] = '\0';
+
+		addr += (uint32_t) entry->size;
+	}
+	return written;
 }
 
 /* ---- Screenshot / framebuffer ---- */

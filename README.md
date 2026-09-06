@@ -9,8 +9,9 @@ built headless.
 
 See [`docs/plan.md`](docs/plan.md) for the full project plan and milestone
 breakdown, and [`docs/prd/triage/`](docs/prd/triage/) for the per-milestone
-PRDs. This repo is early: Milestone 1 (the native shim) and Milestone 2 (the
-core MCP tools) have landed so far.
+PRDs. This repo is early: Milestone 1 (the native shim), Milestone 2 (the
+core MCP tools), and Milestone 3 (debugger tools — breakpoints, watchpoints,
+registers, disassembly) have landed so far.
 
 ## Native shim (`native/`)
 
@@ -32,9 +33,30 @@ It covers:
   `mcbamgba_bus_write{8,16,32}`.
 - Breakpoints and watchpoints (backed by `mDebuggerPlatform`, attached via
   `mDebuggerAttach`): `mcbamgba_set_breakpoint`, `mcbamgba_clear_breakpoint`,
-  `mcbamgba_list_breakpoints`, and the watchpoint equivalents.
+  `mcbamgba_list_breakpoints`, and the watchpoint equivalents. A breakpoint
+  fires just *before* the instruction at its address executes; a watchpoint
+  fires as part of the memory access that triggers it (so its reported value
+  already reflects a completed write).
 - Registers: `mcbamgba_list_registers`, `mcbamgba_read_register`,
   `mcbamgba_write_register`.
+- `mcbamgba_run_until_breakpoint`: runs forward one instruction at a time —
+  internally, inside the shim, as a single blocking call with no polling and
+  no threads — until a breakpoint or watchpoint fires, or until a safety cap
+  on the number of instructions is reached with nothing firing. Fills an
+  out-struct with a stop-reason code (`MCBAMGBA_STOP_BREAKPOINT` /
+  `MCBAMGBA_STOP_WATCHPOINT` / `MCBAMGBA_STOP_CAP`), the id and address of
+  whatever fired (or `-1`/current PC for a cap timeout), watchpoint
+  before/after values where applicable, and the instruction count actually
+  run — so a caller can always tell a real hit apart from a timeout
+  unambiguously, never just infer it from a lack of error.
+- `mcbamgba_disassemble`: decodes `count` ARM/THUMB instructions starting at
+  an address into mnemonic + operand strings (e.g. `"str r1, [r0]"`), using
+  mGBA's internal ARM/THUMB decoder (`mgba/internal/arm/decoder.h`, vendored
+  header — safe to include at compile time since `libmgba` is built from
+  source here, not consumed as a preinstalled SDK). Every instruction in a
+  requested range is decoded using the CPU's *current* execution mode (ARM
+  or Thumb); no ELF/symbol table is loaded, so branch/load targets are raw
+  addresses, not symbol names.
 - Input: `mcbamgba_set_keys`, taking a bitmask of the GBA's 10 buttons
   (`MCBAMGBA_KEY_*`, mirroring libmgba's internal `enum GBAKey` bit
   positions).
@@ -89,6 +111,12 @@ also exercises reset, register read/write/list, breakpoint/watchpoint
 set/list/clear, frame stepping, input (`set_keys` against the `KEYINPUT`
 I/O register), the framebuffer getter, and a save-state round-trip.
 
+It also exercises `mcbamgba_run_until_breakpoint` (stopping for a breakpoint
+on the fixture's known write instruction, for a watchpoint on the write
+address, and hitting the safety cap against an unreachable breakpoint) and
+`mcbamgba_disassemble` (decoding the fixture's four known instructions and
+checking the resulting mnemonics/operands).
+
 Run it via `native/build.sh --test` (uses CTest), or directly:
 
 ```sh
@@ -132,8 +160,9 @@ background execution), and supports a single loaded ROM/session at a time.
   module (already part of every Node runtime — not a new dependency) for
   the DEFLATE/zlib compression PNG's `IDAT` chunk requires.
 - `src/tools/`: one file per tool group — `rom.ts`, `execution.ts`,
-  `memory.ts`, `input.ts`, `screenshot.ts`, `state.ts` — each a thin layer
-  that parses MCP input, calls `Session`, and formats an MCP result.
+  `memory.ts`, `input.ts`, `screenshot.ts`, `state.ts`, `debugger.ts` — each
+  a thin layer that parses MCP input, calls `Session`, and formats an MCP
+  result.
 - `src/index.ts`: registers every tool on an `McpServer` and connects it
   over `StdioServerTransport`.
 
@@ -174,13 +203,21 @@ dist/index.js`) at the built server to drive it interactively.
 | `screenshot` | Captures the current 240x160 frame as a PNG image. |
 | `save_state` | Snapshots the current point in execution as an opaque, base64-encoded blob (never interpreted by the server) that `load_state` can return to later without replaying input. |
 | `load_state` | Restores emulator state from a blob previously returned by `save_state`, for a core loaded from the same ROM. |
+| `set_breakpoint` | Sets a hardware breakpoint at `address`. Fires just before the instruction at that address executes. |
+| `clear_breakpoint` | Removes the breakpoint with the given `id`. |
+| `list_breakpoints` | Lists every breakpoint currently set. |
+| `set_watchpoint` | Sets a watchpoint at `address` for a given access `kind` (`write`, `read`, `rw`, `change`, `write_change`). |
+| `clear_watchpoint` | Removes the watchpoint with the given `id`. |
+| `list_watchpoints` | Lists every watchpoint currently set. |
+| `get_registers` | Reads the full CPU register set (`r0`-`r15`, `cpsr`, ...) at the current point in execution. |
+| `set_register` | Writes a single register by name (e.g. `r0`, `pc`, `sp`, `lr`, `cpsr`), to mutate CPU state and test a hypothesis. |
+| `run_until_breakpoint` | Runs forward (single-stepping internally, one blocking call) until a breakpoint or watchpoint fires, or a safety `max_instructions` cap is reached. The response's `stop_reason` (`"breakpoint"` / `"watchpoint"` / `"cap"`) unambiguously distinguishes a real hit from a timeout, alongside the id/address that fired and the current register set. |
+| `disassemble` | Decodes `count` ARM/THUMB instructions starting at `address` into mnemonic + operand strings, using the CPU's current execution mode for the whole range. |
 
 Every tool other than `load_rom` fails with a structured
-`[NO_ROM_LOADED]` error if called before a ROM is loaded.
-
-Breakpoints, watchpoints, register read/write, and disassembly land in
-Milestone 3 — the native shim already exposes their C ABI (see above), but
-no MCP tools wrap them yet.
+`[NO_ROM_LOADED]` error if called before a ROM is loaded. `clear_breakpoint`,
+`clear_watchpoint`, and `set_register` fail with a structured `[NOT_FOUND]`
+error if given an id/register name that doesn't exist.
 
 ### Testing
 
@@ -204,3 +241,13 @@ Runs on the real compiled native shim + `libmgba` (nothing about
   run whole frames, press a button, take a screenshot, and round-trip a
   save state (save, mutate memory further, load, confirm memory matches
   the saved point rather than the mutation).
+- `test/debugger.test.ts` — the Milestone 3 integration tests: drives the
+  real registered debugger MCP tools to set a breakpoint on the fixture's
+  known write instruction and confirm `run_until_breakpoint` stops there
+  with matching PC/registers before the write happens; set a watchpoint on
+  the write address and confirm it stops for the write instead of running
+  past it into the fixture's infinite loop; confirm a `max_instructions`
+  safety cap is clearly distinguishable (`stop_reason: "cap"`) from a real
+  hit; round-trip a register write; and disassemble the fixture's four
+  known instructions, asserting the decoded mnemonics/operands match its
+  known assembly source.

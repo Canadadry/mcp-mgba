@@ -100,6 +100,12 @@ export const MCBAMGBA_KEY_DOWN = 0x0080;
 export const MCBAMGBA_KEY_R = 0x0100;
 export const MCBAMGBA_KEY_L = 0x0200;
 
+/* ---- run_until_breakpoint stop reasons (mirrors shim.h's MCBAMGBA_STOP_*) ---- */
+export const MCBAMGBA_STOP_BREAKPOINT = 1;
+export const MCBAMGBA_STOP_WATCHPOINT = 2;
+export const MCBAMGBA_STOP_CAP = 3;
+export const MCBAMGBA_DEFAULT_MAX_INSTRUCTIONS = 1000000;
+
 /* ---- Screen dimensions (mirrors shim.h's MCBAMGBA_SCREEN_*) ---- */
 export const MCBAMGBA_SCREEN_WIDTH = 240;
 export const MCBAMGBA_SCREEN_HEIGHT = 160;
@@ -120,6 +126,23 @@ export const mcbamgba_watchpoint_t = koffi.struct("mcbamgba_watchpoint_t", {
 export const mcbamgba_register_t = koffi.struct("mcbamgba_register_t", {
 	name: koffi.array("char", 16),
 	value: "uint32_t",
+});
+
+export const mcbamgba_run_result_t = koffi.struct("mcbamgba_run_result_t", {
+	stop_reason: "int32_t",
+	point_id: "int64_t",
+	address: "uint32_t",
+	watch_type: "int32_t",
+	old_value: "uint32_t",
+	new_value: "uint32_t",
+	instructions_run: "int64_t",
+});
+
+export const mcbamgba_instruction_t = koffi.struct("mcbamgba_instruction_t", {
+	address: "uint32_t",
+	opcode: "uint32_t",
+	size: "int32_t",
+	text: koffi.array("char", 64),
 });
 
 /* ---- Lifecycle ---- */
@@ -164,6 +187,19 @@ export const readRegister = lib.func(
 );
 export const writeRegister = lib.func(
 	"int mcbamgba_write_register(const char *name, uint32_t value)",
+);
+
+/* ---- run_until_breakpoint ----
+ * `out` is a single mcbamgba_run_result_t struct (by-pointer out-param, not
+ * an array). */
+export const runUntilBreakpoint = lib.func(
+	"int mcbamgba_run_until_breakpoint(int64_t max_instructions, _Out_ mcbamgba_run_result_t *out)",
+);
+
+/* ---- Disassembly ----
+ * `out` must be a buffer of at least `count` mcbamgba_instruction_t entries. */
+export const disassemble = lib.func(
+	"int32_t mcbamgba_disassemble(uint32_t address, int32_t count, _Out_ mcbamgba_instruction_t *out)",
 );
 
 /* ---- Input ---- */

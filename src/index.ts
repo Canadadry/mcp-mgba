@@ -13,6 +13,7 @@ import { registerMemoryTools } from "./tools/memory.js";
 import { registerInputTools } from "./tools/input.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
 import { registerStateTools } from "./tools/state.js";
+import { registerDebuggerTools } from "./tools/debugger.js";
 
 const server = new McpServer({
 	name: "mcp-mgba",
@@ -27,6 +28,7 @@ registerMemoryTools(server, session);
 registerInputTools(server, session);
 registerScreenshotTools(server, session);
 registerStateTools(server, session);
+registerDebuggerTools(server, session);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

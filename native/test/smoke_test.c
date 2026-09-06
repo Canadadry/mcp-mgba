@@ -139,6 +139,104 @@ int main(int argc, char** argv) {
 	CHECK(mcbamgba_read_register("pc", &pc) == MCBAMGBA_OK && pc == 0x08000004,
 	      "pc is back at its post-reset value");
 
+	/* ---- Milestone 3: run_until_breakpoint ----
+	 * Fresh reset, so these tests don't depend on where the earlier checks
+	 * above left the CPU. The fixture's code (see the header comment above
+	 * and README) is:
+	 *   0x080000C0: MOV R0, #0x03000000
+	 *   0x080000C4: MOV R1, #0x42
+	 *   0x080000C8: STR R1, [R0]      <- the known write
+	 *   0x080000CC: B $               <- loops forever
+	 */
+	CHECK(mcbamgba_reset() == MCBAMGBA_OK, "reset before run_until_breakpoint checks");
+
+	int64_t write_bp_id = mcbamgba_set_breakpoint(0x080000C8);
+	CHECK(write_bp_id >= 1, "set_breakpoint on the write instruction succeeds");
+
+	mcbamgba_run_result_t run_result;
+	memset(&run_result, 0xAA, sizeof(run_result));
+	CHECK(mcbamgba_run_until_breakpoint(1000, &run_result) == MCBAMGBA_OK,
+	      "run_until_breakpoint succeeds");
+	CHECK(run_result.stop_reason == MCBAMGBA_STOP_BREAKPOINT,
+	      "run_until_breakpoint stops for the breakpoint, not the cap");
+	CHECK(run_result.point_id == write_bp_id,
+	      "run_until_breakpoint reports the breakpoint's own id");
+	CHECK(run_result.address == 0x080000C8,
+	      "run_until_breakpoint reports the breakpoint's address");
+	CHECK(run_result.instructions_run > 0 && run_result.instructions_run < 100,
+	      "run_until_breakpoint reports a small, sane instruction count");
+	/* A breakpoint fires just *before* the instruction at its address
+	 * executes (matching ARMDebuggerCheckBreakpoints, which checks the
+	 * next-to-run instruction, not the one just run) - so the write hasn't
+	 * happened yet here, and one more step performs it. */
+	CHECK(mcbamgba_bus_read8(0x03000000) == 0x00,
+	      "the write instruction has not executed yet - the breakpoint stopped before it");
+	CHECK(mcbamgba_step() == MCBAMGBA_OK, "stepping once more past the breakpoint succeeds");
+	CHECK(mcbamgba_bus_read8(0x03000000) == 0x42,
+	      "the write instruction ran after stepping past the breakpoint");
+
+	CHECK(mcbamgba_clear_breakpoint(write_bp_id) == MCBAMGBA_OK,
+	      "clear_breakpoint after run_until_breakpoint succeeds");
+
+	/* Watchpoint: reset again, watch the write address instead of the PC,
+	 * and confirm run_until_breakpoint stops for the write rather than
+	 * running past it into the infinite loop. */
+	CHECK(mcbamgba_reset() == MCBAMGBA_OK, "reset before watchpoint check");
+	int64_t write_wp_id = mcbamgba_set_watchpoint(0x03000000, MCBAMGBA_WATCHPOINT_WRITE);
+	CHECK(write_wp_id >= 1, "set_watchpoint on the write address succeeds");
+
+	memset(&run_result, 0xAA, sizeof(run_result));
+	CHECK(mcbamgba_run_until_breakpoint(1000, &run_result) == MCBAMGBA_OK,
+	      "run_until_breakpoint succeeds (watchpoint)");
+	CHECK(run_result.stop_reason == MCBAMGBA_STOP_WATCHPOINT,
+	      "run_until_breakpoint stops for the watchpoint, not the cap");
+	CHECK(run_result.point_id == write_wp_id,
+	      "run_until_breakpoint reports the watchpoint's own id");
+	CHECK(run_result.address == 0x03000000, "run_until_breakpoint reports the written address");
+	CHECK(run_result.watch_type == MCBAMGBA_WATCHPOINT_WRITE,
+	      "run_until_breakpoint reports the watchpoint's type");
+	CHECK(run_result.new_value == 0x42, "run_until_breakpoint reports the value that was written");
+	CHECK(mcbamgba_clear_watchpoint(write_wp_id) == MCBAMGBA_OK,
+	      "clear_watchpoint after run_until_breakpoint succeeds");
+
+	/* Safety cap: a breakpoint at an address the fixture never reaches
+	 * (it loops forever at 0x080000CC, well before this) must not hang -
+	 * it should come back reporting MCBAMGBA_STOP_CAP once the small cap
+	 * passed in is reached, clearly distinguishable from a real hit. */
+	CHECK(mcbamgba_reset() == MCBAMGBA_OK, "reset before cap check");
+	int64_t unreachable_bp_id = mcbamgba_set_breakpoint(0x08000100);
+	CHECK(unreachable_bp_id >= 1, "set_breakpoint on an unreachable address succeeds");
+
+	memset(&run_result, 0xAA, sizeof(run_result));
+	CHECK(mcbamgba_run_until_breakpoint(50, &run_result) == MCBAMGBA_OK,
+	      "run_until_breakpoint succeeds (cap)");
+	CHECK(run_result.stop_reason == MCBAMGBA_STOP_CAP,
+	      "run_until_breakpoint reports MCBAMGBA_STOP_CAP, distinguishable from a real hit");
+	CHECK(run_result.point_id == -1, "run_until_breakpoint reports no point id for a cap stop");
+	CHECK(run_result.instructions_run == 50,
+	      "run_until_breakpoint ran exactly up to the cap it was given");
+	CHECK(mcbamgba_clear_breakpoint(unreachable_bp_id) == MCBAMGBA_OK,
+	      "clear_breakpoint after the cap check succeeds");
+
+	/* ---- Milestone 3: disassemble ---- */
+	mcbamgba_instruction_t insns[4];
+	int32_t insn_count = mcbamgba_disassemble(0x080000C0, 4, insns);
+	CHECK(insn_count == 4, "disassemble returns the requested instruction count");
+	CHECK(insns[0].address == 0x080000C0 && insns[1].address == 0x080000C4 &&
+	          insns[2].address == 0x080000C8 && insns[3].address == 0x080000CC,
+	      "disassemble reports consecutive ARM (4-byte) instruction addresses");
+	CHECK(insns[0].size == 4, "disassemble reports ARM instructions as 4 bytes wide");
+	CHECK(insns[0].opcode == 0xE3A00403, "disassemble reports the raw ARM opcode word");
+	CHECK(strstr(insns[0].text, "mov") != NULL && strstr(insns[0].text, "r0") != NULL,
+	      "disassemble decodes 'MOV R0, #0x03000000' with mnemonic and register visible");
+	CHECK(strstr(insns[1].text, "mov") != NULL && strstr(insns[1].text, "r1") != NULL,
+	      "disassemble decodes 'MOV R1, #0x42'");
+	CHECK(strstr(insns[2].text, "str") != NULL && strstr(insns[2].text, "r1") != NULL &&
+	          strstr(insns[2].text, "r0") != NULL,
+	      "disassemble decodes 'STR R1, [R0]' with both registers visible");
+	CHECK(strstr(insns[3].text, "b") != NULL,
+	      "disassemble decodes the trailing infinite-loop branch");
+
 	mcbamgba_unload_rom();
 	CHECK(mcbamgba_is_rom_loaded() == 0, "ROM reports unloaded after unload_rom");
 

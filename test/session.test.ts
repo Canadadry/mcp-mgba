@@ -21,7 +21,7 @@ describe("Session", () => {
 			}
 		});
 
-		it("rejects step(), readMemory(), writeMemory(), pressButton(), screenshot(), saveState(), and loadState() the same way", () => {
+		it("rejects step(), readMemory(), writeMemory(), pressButton(), screenshot(), saveState(), loadState(), and every debugger tool the same way", () => {
 			const calls: Array<[string, () => unknown]> = [
 				["step", () => session.step()],
 				["runFrames", () => session.runFrames(1)],
@@ -31,6 +31,16 @@ describe("Session", () => {
 				["screenshot", () => session.screenshot()],
 				["saveState", () => session.saveState()],
 				["loadState", () => session.loadState(Buffer.from([1]))],
+				["setBreakpoint", () => session.setBreakpoint(0)],
+				["clearBreakpoint", () => session.clearBreakpoint(1)],
+				["listBreakpoints", () => session.listBreakpoints()],
+				["setWatchpoint", () => session.setWatchpoint(0, 1)],
+				["clearWatchpoint", () => session.clearWatchpoint(1)],
+				["listWatchpoints", () => session.listWatchpoints()],
+				["getRegisters", () => session.getRegisters()],
+				["setRegister", () => session.setRegister("r0", 0)],
+				["runUntilBreakpoint", () => session.runUntilBreakpoint()],
+				["disassemble", () => session.disassemble(0, 1)],
 			];
 			for (const [name, call] of calls) {
 				expect(call, name).toThrow(SessionError);

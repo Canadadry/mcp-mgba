@@ -84,17 +84,21 @@ void mcbamgba_bus_write32(uint32_t address, uint32_t value);
 
 /* ---- Breakpoints ----
  * Backed by mDebuggerPlatform, attached via mDebuggerAttach when a ROM is
- * loaded. Hitting a breakpoint during mcbamgba_step() is not yet observable
- * through this shim (that lands with run_until_breakpoint in Milestone 3);
- * set/clear/list are wired now since later milestones depend on them. */
+ * loaded. Hitting a breakpoint during a plain mcbamgba_step() is still not
+ * observable through this shim - only mcbamgba_run_until_breakpoint() below
+ * checks for hits (it does so once per internal step). */
 
 typedef struct mcbamgba_breakpoint {
 	int64_t id;
 	uint32_t address;
 } mcbamgba_breakpoint_t;
 
-/* Sets a hardware breakpoint at `address`. Returns the new breakpoint's id
- * (>= 1) on success, or a negative MCBAMGBA_ERR_* code on failure. */
+/* Sets a hardware breakpoint at `address`. Fires just *before* the
+ * instruction at `address` executes (checked once per internal step by
+ * mcbamgba_run_until_breakpoint - see below), so when it fires that
+ * instruction's effects have not happened yet; step once more to run it.
+ * Returns the new breakpoint's id (>= 1) on success, or a negative
+ * MCBAMGBA_ERR_* code on failure. */
 int64_t mcbamgba_set_breakpoint(uint32_t address);
 
 /* Clears the breakpoint with the given id. Returns MCBAMGBA_OK on success,
@@ -156,6 +160,93 @@ int mcbamgba_read_register(const char* name, uint32_t* out_value);
 /* Writes a single register by name. Same return codes as
  * mcbamgba_read_register. */
 int mcbamgba_write_register(const char* name, uint32_t value);
+
+/* ---- run_until_breakpoint ----
+ * Runs the core forward one instruction at a time, internally (a single
+ * blocking call - no polling, no threads), until a breakpoint or watchpoint
+ * fires or a safety cap on the number of instructions is reached. This is
+ * the mechanism referenced in the Breakpoints section above: it is the only
+ * entry point in this shim that actually checks for a hit while running. */
+
+#define MCBAMGBA_STOP_BREAKPOINT 1
+#define MCBAMGBA_STOP_WATCHPOINT 2
+/* Reached the instruction cap without any breakpoint/watchpoint firing -
+ * a timeout, not a hit. Always check out_result->stop_reason against this
+ * before trusting point_id/address as a real stop; a client that doesn't
+ * check would otherwise mistake "gave up" for "found it". */
+#define MCBAMGBA_STOP_CAP 3
+
+/* Used whenever mcbamgba_run_until_breakpoint's max_instructions argument is
+ * <= 0: a safety cap so a breakpoint/watchpoint that never fires can't hang
+ * the call forever. */
+#define MCBAMGBA_DEFAULT_MAX_INSTRUCTIONS 1000000
+
+typedef struct mcbamgba_run_result {
+	/* MCBAMGBA_STOP_BREAKPOINT, MCBAMGBA_STOP_WATCHPOINT, or
+	 * MCBAMGBA_STOP_CAP - see above. */
+	int32_t stop_reason;
+	/* The id of the breakpoint/watchpoint that fired (matches the id
+	 * returned by mcbamgba_set_breakpoint/mcbamgba_set_watchpoint). -1 for
+	 * MCBAMGBA_STOP_CAP, since nothing fired. */
+	int64_t point_id;
+	/* MCBAMGBA_STOP_BREAKPOINT: the breakpoint's address.
+	 * MCBAMGBA_STOP_WATCHPOINT: the accessed address that triggered it.
+	 * MCBAMGBA_STOP_CAP: the current PC when the cap was hit. */
+	uint32_t address;
+	/* MCBAMGBA_STOP_WATCHPOINT only: the watchpoint's MCBAMGBA_WATCHPOINT_*
+	 * type, and the memory value immediately before/after the triggering
+	 * access. Zero for every other stop reason. */
+	int32_t watch_type;
+	uint32_t old_value;
+	uint32_t new_value;
+	/* Number of instructions this call actually executed (<= whatever
+	 * max_instructions cap was in effect). */
+	int64_t instructions_run;
+} mcbamgba_run_result_t;
+
+/* Runs until a breakpoint/watchpoint fires or `max_instructions` instructions
+ * have executed without one firing (pass <= 0 to use
+ * MCBAMGBA_DEFAULT_MAX_INSTRUCTIONS). Fills `out_result`. Returns
+ * MCBAMGBA_OK on success (check out_result->stop_reason for what actually
+ * happened), MCBAMGBA_ERR_NO_ROM if no ROM is loaded, MCBAMGBA_ERR_GENERIC if
+ * `out_result` is NULL. */
+int mcbamgba_run_until_breakpoint(int64_t max_instructions, mcbamgba_run_result_t* out_result);
+
+/* ---- Disassembly ----
+ * Backed by mGBA's internal ARM/THUMB decoder (mgba/internal/arm/decoder.h),
+ * decoded to a mnemonic + operand string via that same header's
+ * ARMDisassemble(). This shim links libmgba from source, so including an
+ * internal header at compile time is fine - it never leaks an internal type
+ * across this ABI boundary (mcbamgba_instruction_t below is a plain,
+ * fixed-size struct). No ELF/symbol table is loaded, so branch/load targets
+ * are printed as raw addresses, never symbol names. */
+
+#define MCBAMGBA_DISASM_TEXT_MAX 64
+
+typedef struct mcbamgba_instruction {
+	uint32_t address;
+	/* Raw opcode: the full 32-bit ARM word, or a 16-bit Thumb halfword (high
+	 * 16 bits zero). See `size` to tell which. */
+	uint32_t opcode;
+	/* Instruction size in bytes: 4 for ARM, 2 for Thumb. */
+	int32_t size;
+	/* Decoded mnemonic + operands (e.g. "str r1, [r0]"), NUL-terminated and
+	 * truncated to fit if necessary. Decoded without a live CPU/register
+	 * context, so a PC-relative literal load prints its target address
+	 * rather than the loaded value. */
+	char text[MCBAMGBA_DISASM_TEXT_MAX];
+} mcbamgba_instruction_t;
+
+/* Decodes `count` instructions starting at `address` into `out` (which must
+ * have room for at least `count` entries). Every instruction in the range is
+ * decoded using the CPU's *current* execution mode (ARM or Thumb, from the
+ * live cpsr) - this shim has no per-address mode information, so pass an
+ * `address` you know is mode-consistent with the current PC (e.g. the
+ * current PC itself, or another address in the same run of code). Returns
+ * the number of instructions written (== count on success), or a negative
+ * MCBAMGBA_ERR_* code (MCBAMGBA_ERR_NO_ROM if no ROM is loaded,
+ * MCBAMGBA_ERR_GENERIC if `out` is NULL or `count` <= 0). */
+int32_t mcbamgba_disassemble(uint32_t address, int32_t count, mcbamgba_instruction_t* out);
 
 /* ---- Screenshot / framebuffer ----
  * The GBA's screen is a fixed 240x160 resolution for every ROM - these
