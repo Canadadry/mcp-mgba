@@ -8,11 +8,12 @@ built on [mGBA](https://mgba.io/)'s core emulation library (`libmgba`),
 built headless.
 
 See [`docs/plan.md`](docs/plan.md) for the full project plan and milestone
-breakdown, and [`docs/prd/triage/`](docs/prd/triage/) for the per-milestone
+breakdown, and [`docs/prd/done/`](docs/prd/done/) for the per-milestone
 PRDs. Milestone 1 (the native shim), Milestone 2 (the core MCP tools),
 Milestone 3 (debugger tools — breakpoints, watchpoints, registers,
 disassembly), Milestone 4 (the from-source test fixture ROM), and
-Milestone 5 (packaging, CI matrix, and licensing) have all landed.
+Milestone 5 (packaging, CI matrix, and licensing) have all landed — the
+triage queue is empty.
 
 ## Native shim (`native/`)
 
@@ -130,7 +131,7 @@ native/build/linux-x64/mcbamgba_smoke_test test/fixtures/rom/build/fixture.gba
 Milestones 2-4's tests all need a real GBA ROM with known, predictable
 behavior to assert against, and the project's no-committed-binary-ROM
 policy means that ROM can never be checked into git as a binary — see
-[`docs/prd/triage/04-test-fixture-rom.md`](docs/prd/triage/04-test-fixture-rom.md).
+[`docs/prd/done/04-test-fixture-rom.md`](docs/prd/done/04-test-fixture-rom.md).
 
 Only assembly **source** is committed, at
 [`test/fixtures/rom/fixture.s`](test/fixtures/rom/fixture.s) (note: this
@@ -329,7 +330,7 @@ for now — only linux-x64 and macOS (arm64 + x64) are built and published.
   project's headless requirement, not just a claim in this README.
 - [`.github/workflows/build-native.yml`](.github/workflows/build-native.yml)
   builds the native shim across a platform matrix (`ubuntu-latest` for
-  linux-x64, `macos-14` for darwin-arm64, `macos-13` for darwin-x64,
+  linux-x64, `macos-14` for darwin-arm64, `macos-15-intel` for darwin-x64,
   each running `native/build.sh --test`) and uploads each platform's
   `libmcbamgba_shim.{so,dylib}` as a CI artifact (`shim-linux-x64`,
   `shim-darwin-arm64`, `shim-darwin-x64`). This is the matrix that catches
