@@ -4,3 +4,7 @@ native/build/
 # Node / TypeScript MCP server build output
 node_modules/
 dist/
+
+# Test fixture ROM, assembled from test/fixtures/rom/fixture.s by
+# test/fixtures/rom/build.sh - never a committed binary.
+test/fixtures/rom/build/

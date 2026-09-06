@@ -90,5 +90,9 @@ fi
 echo "built: $SHIM_LIB"
 
 if [ "$RUN_TEST" -eq 1 ]; then
+	# Assemble the fixture ROM from source (test/fixtures/rom/fixture.s)
+	# fresh before running the smoke test - see
+	# test/fixtures/rom/build.sh and docs/prd/triage/04-test-fixture-rom.md.
+	"$NATIVE_DIR/../test/fixtures/rom/build.sh"
 	ctest --test-dir "$BUILD_DIR" --output-on-failure
 fi

@@ -10,8 +10,9 @@ built headless.
 See [`docs/plan.md`](docs/plan.md) for the full project plan and milestone
 breakdown, and [`docs/prd/triage/`](docs/prd/triage/) for the per-milestone
 PRDs. This repo is early: Milestone 1 (the native shim), Milestone 2 (the
-core MCP tools), and Milestone 3 (debugger tools — breakpoints, watchpoints,
-registers, disassembly) have landed so far.
+core MCP tools), Milestone 3 (debugger tools — breakpoints, watchpoints,
+registers, disassembly), and Milestone 4 (the from-source test fixture ROM)
+have landed so far.
 
 ## Native shim (`native/`)
 
@@ -117,22 +118,60 @@ address, and hitting the safety cap against an unreachable breakpoint) and
 `mcbamgba_disassemble` (decoding the fixture's four known instructions and
 checking the resulting mnemonics/operands).
 
-Run it via `native/build.sh --test` (uses CTest), or directly:
+Run it via `native/build.sh --test` (uses CTest, and assembles the fixture
+ROM below first), or directly, once the fixture has been built (see below):
 
 ```sh
-native/build/linux-x64/mcbamgba_smoke_test native/test/fixtures/minimal.gba
+native/build/linux-x64/mcbamgba_smoke_test test/fixtures/rom/build/fixture.gba
 ```
 
 #### Fixture ROM
 
-`native/test/fixtures/minimal.gba` is a hand-built, 512-byte GBA ROM with a
-valid header (correct entry-point branch, fixed byte, header checksum) and
-four ARM instructions: it writes `0x42` to `0x03000000` (the start of
-IWRAM) and then loops forever. It exists only because Milestone 4's proper
-fixture-ROM pipeline (assembled from source via devkitARM, see
-[`docs/prd/triage/04-test-fixture-rom.md`](docs/prd/triage/04-test-fixture-rom.md))
-hasn't landed yet — once it does, it should supersede this placeholder as
-the shared fixture for the native, MCP-tool, and debugger-tool tests alike.
+Milestones 2-4's tests all need a real GBA ROM with known, predictable
+behavior to assert against, and the project's no-committed-binary-ROM
+policy means that ROM can never be checked into git as a binary — see
+[`docs/prd/triage/04-test-fixture-rom.md`](docs/prd/triage/04-test-fixture-rom.md).
+
+Only assembly **source** is committed, at
+[`test/fixtures/rom/fixture.s`](test/fixtures/rom/fixture.s) (note: this
+lives at the repo root under `test/fixtures/rom/`, not under `native/`,
+since it's shared by both the native smoke test and the TypeScript
+integration tests). It's a tiny ARM program with a standard 192-byte GBA
+header followed by four instructions:
+
+```
+0x080000C0: mov  r0, #0x03000000   ; r0 = start of IWRAM
+0x080000C4: mov  r1, #0x42         ; r1 = the known constant
+0x080000C8: str  r1, [r0]          ; the known write: IWRAM[0x03000000] = 0x42
+0x080000CC: b    loop              ; infinite loop (branches to itself)
+```
+
+[`test/fixtures/rom/build.sh`](test/fixtures/rom/build.sh) assembles this
+source into `test/fixtures/rom/build/fixture.gba` (gitignored — always
+rebuilt, never committed) using `arm-none-eabi-as`/`-ld`/`-objcopy`, then
+patches in the header's complement checksum by hand (libmgba doesn't
+actually validate the GBA header checksum or Nintendo logo on this
+loading path — see `fixture.s`'s header comment for why — so this is
+computed for spec-completeness, not because anything here checks it). No
+`gbafix`-equivalent tool is needed. This one script is the single place
+the fixture-build logic lives, invoked both by `npm test` (as the
+`pretest` script) and by `native/build.sh --test`, so both test suites
+always run against a freshly-assembled fixture.
+
+**Toolchain prerequisite**: assembling the fixture requires
+`arm-none-eabi-as`, `arm-none-eabi-ld`, and `arm-none-eabi-objcopy` on
+`PATH` — a bare ARM cross-binutils, *not* the full devkitARM toolchain.
+On Debian/Ubuntu:
+
+```sh
+sudo apt-get install binutils-arm-none-eabi
+```
+
+On macOS (Homebrew): `brew install --cask gcc-arm-embedded`, or any
+equivalent package that provides those three binaries. This is an
+OS-level dependency, not an npm one — `test/fixtures/rom/build.sh` checks
+for it up front and fails with this same guidance (rather than a bare
+"command not found") if it's missing.
 
 ## MCP server (`src/`)
 
@@ -224,6 +263,12 @@ error if given an id/register name that doesn't exist.
 ```sh
 npm test
 ```
+
+`npm test`'s `pretest` script runs
+[`test/fixtures/rom/build.sh`](test/fixtures/rom/build.sh) first, freshly
+assembling the shared fixture ROM (see "Fixture ROM" above) before Vitest
+runs — so the same toolchain prerequisite documented there
+(`arm-none-eabi-as`/`-ld`/`-objcopy`) applies here too.
 
 Runs on the real compiled native shim + `libmgba` (nothing about
 `libmgba`/koffi is mocked):

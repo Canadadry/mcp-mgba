@@ -2,11 +2,14 @@
  * libmcbamgba_shim + libmgba - no mocking of libmgba itself, per the
  * Milestone 1 PRD's testing decisions.
  *
- * Loads the fixture ROM at native/test/fixtures/minimal.gba (a hand-built
- * minimal-header GBA ROM - see native/test/fixtures/README.md), steps the
- * CPU through its four instructions, and confirms that the known constant
- * it writes (0x42) shows up at the known IWRAM address (0x03000000). Also
- * exercises reset, breakpoint/watchpoint set+list+clear, and register
+ * Loads the fixture ROM assembled from test/fixtures/rom/fixture.s (see
+ * that file's header comment, and docs/prd/triage/04-test-fixture-rom.md)
+ * by test/fixtures/rom/build.sh into test/fixtures/rom/build/fixture.gba -
+ * never a committed binary. native/build.sh --test runs that build step
+ * before invoking this smoke test. Steps the CPU through the fixture's
+ * four instructions, and confirms that the known constant it writes
+ * (0x42) shows up at the known IWRAM address (0x03000000). Also exercises
+ * reset, breakpoint/watchpoint set+list+clear, and register
  * read/write/list, since those are cheap to check here too and are the
  * next milestones' load-bearing surface.
  */
@@ -29,7 +32,7 @@ static int g_failures = 0;
 	} while (0)
 
 int main(int argc, char** argv) {
-	const char* rom_path = argc > 1 ? argv[1] : "native/test/fixtures/minimal.gba";
+	const char* rom_path = argc > 1 ? argv[1] : "test/fixtures/rom/build/fixture.gba";
 
 	CHECK(mcbamgba_is_rom_loaded() == 0, "no ROM loaded initially");
 

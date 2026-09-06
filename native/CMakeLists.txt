@@ -73,4 +73,4 @@ add_executable(mcbamgba_smoke_test test/smoke_test.c)
 target_link_libraries(mcbamgba_smoke_test PRIVATE mcbamgba_shim)
 target_include_directories(mcbamgba_smoke_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME smoke_test COMMAND mcbamgba_smoke_test
-	"${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/minimal.gba")
+	"${CMAKE_CURRENT_SOURCE_DIR}/../test/fixtures/rom/build/fixture.gba")
