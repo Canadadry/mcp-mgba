@@ -1,0 +1,35 @@
+mcp-mgba
+Copyright the mcp-mgba contributors
+
+This package bundles a compiled build of libmgba, mGBA's core emulation
+library, in the form of a small shared library (`libmcbamgba_shim.so` /
+`libmcbamgba_shim.dylib`) that statically links libmgba and exposes a thin,
+flat C API around it (see `native/shim.c` / `native/shim.h` in this
+project's source repository). Nothing in that shim or its libmgba
+dependency is modified for behavior beyond enabling a headless,
+Qt/SDL/X11-free build (LIBMGBA_ONLY, BUILD_SHARED) and one narrow build-time
+patch working around libmgba's CMake forcing a static-only build under that
+mode (`native/patches/0001-libmgba-only-shared.patch`).
+
+libmgba is licensed under the Mozilla Public License, Version 2.0 (MPL-2.0)
+- see the `LICENSE` file in this package, which is the full text of that
+license. Per MPL-2.0 Section 3.2, source availability for the Covered
+Software is satisfied as follows:
+
+  Project:     mGBA
+  Upstream:    https://github.com/mgba-emu/mgba
+  Vendored as: git submodule at native/vendor/mgba in this project's
+               source repository (https://github.com/mgba-emu/mgba, itself
+               MPL-2.0 licensed)
+  Version:     release tag 0.10.5
+  Commit:      26b7884bc25a5933960f3cdcd98bac1ae14d42e2
+
+The exact, unmodified libmgba source for that tag/commit is available from
+the upstream repository at:
+
+  https://github.com/mgba-emu/mgba/tree/0.10.5
+
+This project's own source (the TypeScript MCP server and the
+`native/shim.c` / `native/shim.h` glue layer) is likewise made available
+under MPL-2.0 - see `LICENSE`. This NOTICE file is provided for
+informational purposes and does not modify the terms of that license.

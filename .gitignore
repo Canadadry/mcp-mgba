@@ -8,3 +8,9 @@ dist/
 # Test fixture ROM, assembled from test/fixtures/rom/fixture.s by
 # test/fixtures/rom/build.sh - never a committed binary.
 test/fixtures/rom/build/
+
+# Prebuilt native shims, assembled from build-native.yml CI artifacts by
+# scripts/prepare-publish.sh immediately before `npm publish` - never
+# committed to git (see docs/prd/triage/05-packaging-ci-licensing.md).
+prebuilt/
+

@@ -9,10 +9,10 @@ built headless.
 
 See [`docs/plan.md`](docs/plan.md) for the full project plan and milestone
 breakdown, and [`docs/prd/triage/`](docs/prd/triage/) for the per-milestone
-PRDs. This repo is early: Milestone 1 (the native shim), Milestone 2 (the
-core MCP tools), Milestone 3 (debugger tools — breakpoints, watchpoints,
-registers, disassembly), and Milestone 4 (the from-source test fixture ROM)
-have landed so far.
+PRDs. Milestone 1 (the native shim), Milestone 2 (the core MCP tools),
+Milestone 3 (debugger tools — breakpoints, watchpoints, registers,
+disassembly), Milestone 4 (the from-source test fixture ROM), and
+Milestone 5 (packaging, CI matrix, and licensing) have all landed.
 
 ## Native shim (`native/`)
 
@@ -218,12 +218,22 @@ npm start        # runs dist/index.js over stdio
 npm run dev      # runs src/index.ts directly via tsx
 ```
 
-The server expects the native shim to already be built at
-`native/build/<platform>/libmcbamgba_shim.{so,dylib}` (matching
-`native/build.sh`'s output layout) and resolves it relative to the
-package's own location at startup; set `MCBAMGBA_SHIM_PATH` to point at a
-shim built elsewhere instead. `npm run typecheck` runs `tsc --noEmit`, and
-`npm test` runs the Vitest suite (see [Testing](#testing) below).
+At startup, `src/ffi.ts`'s `resolveShimPath()` locates the native shim
+relative to the package's own location, in this order:
+
+1. `MCBAMGBA_SHIM_PATH` env var, if set — used as-is, no existence check
+   (for tests, or pointing at a shim built elsewhere).
+2. `prebuilt/<platform>/libmcbamgba_shim.{so,dylib}` — populated only in a
+   published npm tarball (see [Packaging, CI, and
+   releasing](#packaging-ci-and-releasing) below); never present in a git
+   checkout.
+3. `native/build/<platform>/libmcbamgba_shim.{so,dylib}` — this repo's own
+   local build (see [Building](#building) above), which is what keeps this
+   repo's own dev loop and test suite working without `prebuilt/` ever
+   being populated.
+
+`npm run typecheck` runs `tsc --noEmit`, and `npm test` runs the Vitest
+suite (see [Testing](#testing) below).
 
 Point any MCP client (e.g. `npx @modelcontextprotocol/inspector node
 dist/index.js`) at the built server to drive it interactively.
@@ -274,7 +284,9 @@ Runs on the real compiled native shim + `libmgba` (nothing about
 `libmgba`/koffi is mocked):
 
 - `test/ffi.test.ts` — a tracer-bullet test proving the koffi bindings in
-  `src/ffi.ts` marshal correctly against the compiled shim.
+  `src/ffi.ts` marshal correctly against the compiled shim, plus the
+  Milestone 5 `resolveShimPath()` tests covering its
+  override/`prebuilt/`/`native/build/` precedence (see above).
 - `test/session.test.ts` — unit tests `Session`'s `NO_ROM_LOADED` error
   path directly, in isolation from any individual tool.
 - `test/png.test.ts` — round-trips `encodeRgbaToPng`'s output back through
@@ -296,3 +308,68 @@ Runs on the real compiled native shim + `libmgba` (nothing about
   hit; round-trip a register write; and disassemble the fixture's four
   known instructions, asserting the decoded mnemonics/operands match its
   known assembly source.
+
+## Packaging, CI, and releasing
+
+This package ships as a self-contained npm tarball: `npm install` needs no
+compiler, no `node-gyp`, and no network fetch beyond npm itself, because
+the native shim is prebuilt per-platform ahead of time rather than
+compiled on install. Windows and linux-arm64 are explicitly out of scope
+for now — only linux-x64 and macOS (arm64 + x64) are built and published.
+
+### CI
+
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on
+  `ubuntu-latest` on every push/PR: checks out the repo (with submodules),
+  installs `binutils-arm-none-eabi` (the same fixture-ROM toolchain
+  prerequisite documented above), builds the native shim
+  (`native/build.sh`), then runs `npm run typecheck` and `npm test`.
+  Nothing in this workflow installs Xvfb, a display server, or any
+  Qt/SDL/X11 package — that absence is itself the automated proof of this
+  project's headless requirement, not just a claim in this README.
+- [`.github/workflows/build-native.yml`](.github/workflows/build-native.yml)
+  builds the native shim across a platform matrix (`ubuntu-latest` for
+  linux-x64, `macos-14` for darwin-arm64, `macos-13` for darwin-x64,
+  each running `native/build.sh --test`) and uploads each platform's
+  `libmcbamgba_shim.{so,dylib}` as a CI artifact (`shim-linux-x64`,
+  `shim-darwin-arm64`, `shim-darwin-x64`). This is the matrix that catches
+  a platform-specific native build break before publishing.
+
+### Releasing
+
+Automated `npm publish` on tag push is out of scope for now — publishing
+is a deliberate, manual step a maintainer runs:
+
+1. Make sure `.github/workflows/build-native.yml` has completed
+   successfully for the commit being released (push to `master` triggers
+   it, or trigger it manually — it also accepts `workflow_dispatch`), and
+   note its run id (`gh run list --workflow=build-native.yml`).
+2. Populate `prebuilt/<platform>/` from that run's artifacts. Either:
+   - run [`scripts/prepare-publish.sh <run id>`](scripts/prepare-publish.sh)
+     locally (requires the `gh` CLI, authenticated against this repo), or
+   - trigger
+     [`.github/workflows/publish.yml`](.github/workflows/publish.yml)
+     (`workflow_dispatch`, `build_run_id` input) to do the same download
+     plus `npm publish` in CI, gated behind a `dry_run` input (defaults to
+     `true`, which runs `npm publish --dry-run` instead of a real publish).
+3. `prebuilt/` is never committed to git (see `.gitignore`) — it exists
+   only in the working tree for this one step, immediately before
+   `npm publish`/`npm pack`. `package.json`'s `files` field scopes the
+   published tarball to `dist/`, `prebuilt/`, `LICENSE`, and `NOTICE` only
+   (verify with `npm pack --dry-run` before a real publish, per the
+   manual dry-run this milestone's PRD calls for).
+
+At runtime, `src/ffi.ts`'s `resolveShimPath()` picks up whichever
+`prebuilt/<platform>/` shim matches `process.platform`/`process.arch` (see
+[Building and running](#building-and-running) above).
+
+## Licensing
+
+This project is MPL-2.0 licensed — see [`LICENSE`](LICENSE) for the full
+text. It's built on [mGBA](https://mgba.io/)'s `libmgba`
+(also MPL-2.0), vendored as a git submodule pinned to release tag
+`0.10.5` (`native/vendor/mgba`) and statically linked into the compiled
+native shim this package distributes. See [`NOTICE`](NOTICE) for the
+exact vendored tag/commit and a link to mGBA's upstream source, satisfying
+MPL-2.0 §3.2's source-availability requirement for the libmgba code
+distributed in this package's `prebuilt/` binaries.

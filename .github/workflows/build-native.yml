@@ -1,0 +1,67 @@
+name: Build native shim
+
+# Builds native/shim.c against libmgba for every platform this project
+# targets (see docs/prd/done/05-packaging-ci-licensing.md), and uploads
+# each platform's compiled shared library as a CI artifact. This is the
+# matrix that proves the native build is reproducible per-platform, and the
+# artifacts here are what a later manual publish step downloads into
+# prebuilt/<platform>/ before `npm publish` (see scripts/prepare-publish.sh
+# and .github/workflows/publish.yml) - Windows and linux-arm64 are
+# explicitly out of scope for v1.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            artifact: shim-linux-x64
+            lib: libmcbamgba_shim.so
+            platform_dir: linux-x64
+          - name: darwin-arm64
+            os: macos-14
+            artifact: shim-darwin-arm64
+            lib: libmcbamgba_shim.dylib
+            platform_dir: darwin-arm64
+          - name: darwin-x64
+            os: macos-15-intel
+            artifact: shim-darwin-x64
+            lib: libmcbamgba_shim.dylib
+            platform_dir: darwin-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ARM cross-binutils (for the fixture ROM, used by --test)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y binutils-arm-none-eabi
+
+      - name: Install ARM cross-binutils (for the fixture ROM, used by --test)
+        if: runner.os == 'macOS'
+        run: brew install --cask gcc-arm-embedded
+
+      - name: Build and smoke-test the native shim
+        run: native/build.sh --test
+
+      - name: Verify expected shim output exists
+        run: test -f "native/build/${{ matrix.platform_dir }}/${{ matrix.lib }}"
+
+      - name: Upload shim artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native/build/${{ matrix.platform_dir }}/${{ matrix.lib }}
+          if-no-files-found: error

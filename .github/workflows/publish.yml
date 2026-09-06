@@ -1,0 +1,102 @@
+name: Publish
+
+# Manually-triggered release workflow. Deliberately NOT run on tag push -
+# automated `npm publish` on tag push is out of scope for this milestone
+# (see docs/prd/triage/05-packaging-ci-licensing.md's "Out of Scope"). A
+# maintainer runs this by hand (Actions tab -> Publish -> Run workflow, or
+# `gh workflow run publish.yml -f build_run_id=... -f dry_run=true`) after a
+# build-native.yml run has completed successfully for the commit being
+# released.
+#
+# It downloads that run's per-platform shim artifacts into prebuilt/, then
+# runs `npm publish` - the only place in this project prebuilt binaries are
+# assembled; they are never committed to git (see .gitignore).
+#
+# Equivalent to running scripts/prepare-publish.sh locally followed by
+# `npm publish` - this workflow exists so a release doesn't depend on a
+# maintainer's local machine having every artifact and a correct npm login
+# environment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: >-
+          Run ID of the build-native.yml workflow run to pull prebuilt
+          shims from (must have completed successfully for the commit
+          being released; find it with
+          `gh run list --workflow=build-native.yml`).
+        required: true
+        type: string
+      dry_run:
+        description: >-
+          If true, run `npm publish --dry-run` (prints the tarball
+          contents, publishes nothing). Leave true until you've reviewed
+          the file list at least once for a given release.
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build dist/
+        run: npm run build
+
+      - name: Download linux-x64 shim
+        uses: actions/download-artifact@v4
+        with:
+          name: shim-linux-x64
+          path: prebuilt/linux-x64
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.build_run_id }}
+
+      - name: Download darwin-arm64 shim
+        uses: actions/download-artifact@v4
+        with:
+          name: shim-darwin-arm64
+          path: prebuilt/darwin-arm64
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.build_run_id }}
+
+      - name: Download darwin-x64 shim
+        uses: actions/download-artifact@v4
+        with:
+          name: shim-darwin-x64
+          path: prebuilt/darwin-x64
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.build_run_id }}
+
+      - name: Mark shims executable
+        run: chmod +x prebuilt/*/libmcbamgba_shim.*
+
+      - name: Show tarball contents (sanity check before publishing)
+        run: npm pack --dry-run
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

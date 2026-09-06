@@ -15,11 +15,19 @@ import koffi from "koffi";
  *
  * Mirrors native/build.sh's platform-directory naming (`${os}-${arch}`,
  * e.g. `linux-x64`, `darwin-arm64`) and output layout
- * (`native/build/<platform>/libmcbamgba_shim.{so,dylib}`). Milestone 5 adds
- * a `prebuilt/` fallback for published packages; for now this always
- * resolves to a locally-built shim, unless MCBAMGBA_SHIM_PATH overrides it
- * (used by tests and anyone pointing at a shim built elsewhere). */
-function resolveShimPath(): string {
+ * (`<dir>/<platform>/libmcbamgba_shim.{so,dylib}`).
+ *
+ * Precedence:
+ *   1. `MCBAMGBA_SHIM_PATH` env var, if set - overrides everything, no
+ *      existence check (used by tests and anyone pointing at a shim built
+ *      elsewhere).
+ *   2. `prebuilt/<platform>/` - populated only in a published npm tarball
+ *      by the Milestone 5 publish step (see scripts/prepare-publish.sh),
+ *      never present in a git checkout.
+ *   3. `native/build/<platform>/` - the Milestone 1 local build output,
+ *      which is what makes this repo's own dev loop / test suite work
+ *      without `prebuilt/` ever being populated. */
+export function resolveShimPath(): string {
 	const override = process.env.MCBAMGBA_SHIM_PATH;
 	if (override) {
 		return override;
@@ -54,22 +62,26 @@ function resolveShimPath(): string {
 	}
 
 	const ext = os === "darwin" ? "dylib" : "so";
+	const platformDir = `${os}-${arch}`;
+	const filename = `libmcbamgba_shim.${ext}`;
 	const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-	const shimPath = path.join(
-		projectRoot,
-		"native",
-		"build",
-		`${os}-${arch}`,
-		`libmcbamgba_shim.${ext}`,
-	);
 
-	if (!existsSync(shimPath)) {
-		throw new Error(
-			`mcp-mgba: native shim not found at ${shimPath} - build it first with ` +
-				`'native/build.sh' (or set MCBAMGBA_SHIM_PATH to point at an existing build)`,
-		);
+	const prebuiltPath = path.join(projectRoot, "prebuilt", platformDir, filename);
+	if (existsSync(prebuiltPath)) {
+		return prebuiltPath;
 	}
-	return shimPath;
+
+	const localBuildPath = path.join(projectRoot, "native", "build", platformDir, filename);
+	if (existsSync(localBuildPath)) {
+		return localBuildPath;
+	}
+
+	throw new Error(
+		`mcp-mgba: native shim not found at ${prebuiltPath} or ${localBuildPath} - ` +
+			`build it locally with 'native/build.sh', install a published version of ` +
+			`this package (which bundles a prebuilt shim for this platform), or set ` +
+			`MCBAMGBA_SHIM_PATH to point at an existing build`,
+	);
 }
 
 const lib = koffi.load(resolveShimPath());

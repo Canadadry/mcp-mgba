@@ -1,0 +1,47 @@
+name: CI
+
+# Runs on linux-x64 only, with no Xvfb, no display server, and no Qt/SDL
+# packages installed anywhere in this workflow - see
+# docs/prd/triage/05-packaging-ci-licensing.md's Testing Decisions. This is
+# the concrete, automated proof of the project's "headless, no X server, no
+# Qt" requirement: nothing in this file installs a display stack, and the
+# native build (native/CMakeLists.txt / native/build.sh) never links one in.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # test/fixtures/rom/build.sh (run as npm's "pretest" script) needs
+      # arm-none-eabi-as/-ld/-objcopy on PATH to assemble the fixture ROM -
+      # see README.md's "Toolchain prerequisite" section (Milestone 4).
+      - name: Install ARM cross-binutils (for the fixture ROM)
+        run: sudo apt-get update && sudo apt-get install -y binutils-arm-none-eabi
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build the native shim
+        run: native/build.sh
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
