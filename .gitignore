@@ -1,0 +1,6 @@
+# Native build output (produced by native/build.sh, per-platform)
+native/build/
+
+# Node (future milestones)
+node_modules/
+dist/

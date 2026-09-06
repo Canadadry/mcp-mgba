@@ -1,0 +1,20 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4cad4b818..9c1e28c5f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -91,8 +91,13 @@ if(NOT LIBMGBA_ONLY)
+ else()
+ 	set(DISABLE_FRONTENDS ON)
+ 	set(DISABLE_DEPS ON)
+-	set(BUILD_STATIC ON)
+-	set(BUILD_SHARED OFF)
++	# mcp-mgba: upstream forces a static-only build here, which defeats
++	# `-DBUILD_SHARED=ON -DBUILD_STATIC=OFF` on the command line (these are
++	# plain `set()` calls, not CACHE, so they always shadow any command-line
++	# override). Flip the defaults so a shared library is actually produced;
++	# see native/patches/0001-libmgba-only-shared.patch.
++	set(BUILD_STATIC OFF)
++	set(BUILD_SHARED ON)
+ 	if(NOT DEFINED M_CORE_GBA)
+ 		set(M_CORE_GBA ON)
+ 	endif()
