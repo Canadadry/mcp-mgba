@@ -20,6 +20,16 @@
 static struct mCore* g_core = NULL;
 static struct mDebugger g_debugger;
 
+/* The core's video renderer draws into this buffer whenever it runs
+ * (runFrame/step/runLoop) - wired up via setVideoBuffer() before reset() in
+ * mcbamgba_load_rom() below, since the GBA core only associates a renderer
+ * at reset time if an output buffer has already been set. `color_t` is
+ * `uint32_t` in this DISABLE_DEPS build (COLOR_16_BIT is not defined), laid
+ * out per-byte as R,G,B,A (see mgba/core/interface.h's M_COLOR_* masks),
+ * i.e. already tightly-packed RGBA8888 - mcbamgba_get_framebuffer() below
+ * copies it out verbatim. */
+static color_t g_framebuffer[MCBAMGBA_SCREEN_WIDTH * MCBAMGBA_SCREEN_HEIGHT];
+
 static void mcbamgba_teardown(void) {
 	if (!g_core) {
 		return;
@@ -57,6 +67,13 @@ int mcbamgba_load_rom(const char* path) {
 	 * execute unmapped memory at the BIOS's reset vector. */
 	core->opts.skipBios = true;
 
+	/* Must happen before the first reset() below: the GBA core only
+	 * associates a video renderer with the board at reset time, and only if
+	 * an output buffer has already been set (see _GBACoreReset in
+	 * src/gba/core.c). Without this, getPixels() would return a renderer
+	 * with no buffer at all. */
+	core->setVideoBuffer(core, g_framebuffer, MCBAMGBA_SCREEN_WIDTH);
+
 	if (!mCoreLoadFile(core, path)) {
 		mCoreConfigDeinit(&core->config);
 		core->deinit(core);
@@ -93,6 +110,22 @@ int mcbamgba_step(void) {
 		return MCBAMGBA_ERR_NO_ROM;
 	}
 	g_core->step(g_core);
+	return MCBAMGBA_OK;
+}
+
+int mcbamgba_run_frame(void) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	g_core->runFrame(g_core);
+	return MCBAMGBA_OK;
+}
+
+int mcbamgba_set_keys(uint32_t keys) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	g_core->setKeys(g_core, keys);
 	return MCBAMGBA_OK;
 }
 
@@ -280,4 +313,73 @@ int mcbamgba_write_register(const char* name, uint32_t value) {
 		return MCBAMGBA_ERR_NOT_FOUND;
 	}
 	return MCBAMGBA_OK;
+}
+
+/* ---- Screenshot / framebuffer ---- */
+
+int mcbamgba_get_framebuffer(uint8_t* out, int32_t out_size) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	int32_t needed = (int32_t) (MCBAMGBA_SCREEN_WIDTH * MCBAMGBA_SCREEN_HEIGHT * sizeof(color_t));
+	if (!out || out_size < needed) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+
+	const void* pixels = NULL;
+	size_t stride = 0;
+	g_core->getPixels(g_core, &pixels, &stride);
+	if (!pixels) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+
+	/* stride is in pixels, set to MCBAMGBA_SCREEN_WIDTH by setVideoBuffer()
+	 * in mcbamgba_load_rom(), so the buffer is already contiguous and a
+	 * single memcpy covers the whole frame - but copy row by row against
+	 * `stride` regardless, in case that assumption ever changes. */
+	const uint8_t* src = (const uint8_t*) pixels;
+	size_t rowBytes = (size_t) MCBAMGBA_SCREEN_WIDTH * sizeof(color_t);
+	size_t strideBytes = stride * sizeof(color_t);
+	for (int y = 0; y < MCBAMGBA_SCREEN_HEIGHT; ++y) {
+		memcpy(out + (size_t) y * rowBytes, src + (size_t) y * strideBytes, rowBytes);
+	}
+
+	/* Force the alpha byte opaque: the GBA has no real alpha channel, and
+	 * nothing upstream guarantees M_COLOR_ALPHA's bits are populated. */
+	for (int32_t i = 0; i < needed; i += (int32_t) sizeof(color_t)) {
+		out[i + 3] = 0xFF;
+	}
+
+	return MCBAMGBA_OK;
+}
+
+/* ---- Save states ---- */
+
+int32_t mcbamgba_state_size(void) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	return (int32_t) g_core->stateSize(g_core);
+}
+
+int mcbamgba_save_state(uint8_t* out, int32_t out_size) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	int32_t needed = (int32_t) g_core->stateSize(g_core);
+	if (!out || out_size < needed) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+	return g_core->saveState(g_core, out) ? MCBAMGBA_OK : MCBAMGBA_ERR_GENERIC;
+}
+
+int mcbamgba_load_state(const uint8_t* data, int32_t size) {
+	if (!g_core) {
+		return MCBAMGBA_ERR_NO_ROM;
+	}
+	int32_t expected = (int32_t) g_core->stateSize(g_core);
+	if (!data || size < expected) {
+		return MCBAMGBA_ERR_GENERIC;
+	}
+	return g_core->loadState(g_core, data) ? MCBAMGBA_OK : MCBAMGBA_ERR_GENERIC;
 }

@@ -43,6 +43,33 @@ int mcbamgba_reset(void);
  * is loaded. */
 int mcbamgba_step(void);
 
+/* Runs the core forward by exactly one whole video frame (all scanlines +
+ * blanking), distinct from mcbamgba_step()'s single-CPU-instruction
+ * granularity. Returns MCBAMGBA_ERR_NO_ROM if no ROM is loaded. */
+int mcbamgba_run_frame(void);
+
+/* ---- Input ----
+ * Bit values mirror libmgba's internal `enum GBAKey` positions exactly
+ * (bit N set = key N held), so no internal enum needs to cross the ABI. */
+
+#define MCBAMGBA_KEY_A 0x0001
+#define MCBAMGBA_KEY_B 0x0002
+#define MCBAMGBA_KEY_SELECT 0x0004
+#define MCBAMGBA_KEY_START 0x0008
+#define MCBAMGBA_KEY_RIGHT 0x0010
+#define MCBAMGBA_KEY_LEFT 0x0020
+#define MCBAMGBA_KEY_UP 0x0040
+#define MCBAMGBA_KEY_DOWN 0x0080
+#define MCBAMGBA_KEY_R 0x0100
+#define MCBAMGBA_KEY_L 0x0200
+
+/* Sets the full set of currently-held keys to exactly `keys` (an OR of
+ * MCBAMGBA_KEY_* bits; any other bits are ignored by the core). Replaces
+ * whatever was held before - callers wanting to hold+release across
+ * several frames should call this once, run frames, then call it again
+ * with 0. Returns MCBAMGBA_ERR_NO_ROM if no ROM is loaded. */
+int mcbamgba_set_keys(uint32_t keys);
+
 /* ---- Bus memory access (the GBA's full mapped address space) ----
  * These are thin wrappers over mCore's busRead.../busWrite... vtable
  * entries. Reads return 0 and writes are a no-op when no ROM is loaded. */
@@ -129,6 +156,45 @@ int mcbamgba_read_register(const char* name, uint32_t* out_value);
 /* Writes a single register by name. Same return codes as
  * mcbamgba_read_register. */
 int mcbamgba_write_register(const char* name, uint32_t value);
+
+/* ---- Screenshot / framebuffer ----
+ * The GBA's screen is a fixed 240x160 resolution for every ROM - these
+ * dimensions never vary at runtime. */
+
+#define MCBAMGBA_SCREEN_WIDTH 240
+#define MCBAMGBA_SCREEN_HEIGHT 160
+
+/* Copies the current frame's pixels into `out` as tightly-packed RGBA8888
+ * (one byte per channel, row-major, no row padding - matching
+ * MCBAMGBA_SCREEN_WIDTH * MCBAMGBA_SCREEN_HEIGHT * 4 bytes exactly). The
+ * alpha byte is always 0xFF (the GBA has no real alpha channel).
+ * `out_size` must be at least that many bytes. Returns MCBAMGBA_OK on
+ * success, MCBAMGBA_ERR_NO_ROM if no ROM is loaded, MCBAMGBA_ERR_GENERIC if
+ * `out` is NULL or `out_size` is too small. */
+int mcbamgba_get_framebuffer(uint8_t* out, int32_t out_size);
+
+/* ---- Save states ----
+ * State blobs are opaque binary data - the server never interprets their
+ * contents, only stores/replays them via these three calls. */
+
+/* Returns the exact size in bytes of a save-state blob for the currently
+ * loaded core, or a negative MCBAMGBA_ERR_* code (MCBAMGBA_ERR_NO_ROM if no
+ * ROM is loaded). Always call this to size the buffer passed to
+ * mcbamgba_save_state - the size can vary by core/ROM. */
+int32_t mcbamgba_state_size(void);
+
+/* Serializes the current emulator state into `out`. `out_size` must be at
+ * least mcbamgba_state_size() bytes. Returns MCBAMGBA_OK on success,
+ * MCBAMGBA_ERR_NO_ROM if no ROM is loaded, MCBAMGBA_ERR_GENERIC on any
+ * other failure (including `out` NULL or `out_size` too small). */
+int mcbamgba_save_state(uint8_t* out, int32_t out_size);
+
+/* Restores emulator state from a blob previously produced by
+ * mcbamgba_save_state for a core loaded from the same ROM. Returns
+ * MCBAMGBA_OK on success, MCBAMGBA_ERR_NO_ROM if no ROM is loaded,
+ * MCBAMGBA_ERR_GENERIC on any other failure (including a malformed or
+ * mismatched blob). */
+int mcbamgba_load_state(const uint8_t* data, int32_t size);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 # Native build output (produced by native/build.sh, per-platform)
 native/build/
 
-# Node (future milestones)
+# Node / TypeScript MCP server build output
 node_modules/
 dist/

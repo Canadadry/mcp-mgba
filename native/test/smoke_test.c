@@ -13,6 +13,7 @@
 #include "shim.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_failures = 0;
@@ -90,6 +91,47 @@ int main(int argc, char** argv) {
 	CHECK(mcbamgba_clear_watchpoint(wp_id) == MCBAMGBA_OK, "clear_watchpoint succeeds");
 	wp_count = mcbamgba_list_watchpoints(wps, 8);
 	CHECK(wp_count == 0, "list_watchpoints is empty after clearing");
+
+	/* Frame stepping: the fixture loops forever on its last instruction, so
+	 * running whole frames should just burn cycles without crashing or
+	 * moving IWRAM's known value. */
+	for (int i = 0; i < 3; ++i) {
+		CHECK(mcbamgba_run_frame() == MCBAMGBA_OK, "run_frame succeeds");
+	}
+	CHECK(mcbamgba_bus_read8(0x03000000) == 0x42, "IWRAM value survives run_frame");
+
+	/* Input: KEYINPUT (0x04000130) is active-low, so holding A (bit 0)
+	 * should clear that bit once the I/O register is read back. */
+	CHECK(mcbamgba_set_keys(MCBAMGBA_KEY_A) == MCBAMGBA_OK, "set_keys succeeds");
+	uint16_t keyinput = mcbamgba_bus_read16(0x04000130);
+	CHECK((keyinput & MCBAMGBA_KEY_A) == 0, "KEYINPUT reflects A held (active-low)");
+	CHECK(mcbamgba_set_keys(0) == MCBAMGBA_OK, "set_keys(0) releases all keys");
+	keyinput = mcbamgba_bus_read16(0x04000130);
+	CHECK((keyinput & MCBAMGBA_KEY_A) != 0, "KEYINPUT reflects A released");
+
+	/* Screenshot / framebuffer. */
+	static uint8_t framebuffer[MCBAMGBA_SCREEN_WIDTH * MCBAMGBA_SCREEN_HEIGHT * 4];
+	CHECK(mcbamgba_get_framebuffer(framebuffer, sizeof(framebuffer)) == MCBAMGBA_OK,
+	      "get_framebuffer succeeds");
+	CHECK(framebuffer[3] == 0xFF, "framebuffer alpha byte is forced opaque");
+	CHECK(mcbamgba_get_framebuffer(framebuffer, 4) == MCBAMGBA_ERR_GENERIC,
+	      "get_framebuffer rejects an undersized buffer");
+
+	/* Save states: save, mutate memory further, load, confirm the mutation
+	 * is undone and the original known value is back. */
+	int32_t state_size = mcbamgba_state_size();
+	CHECK(state_size > 0, "state_size returns a positive size");
+
+	uint8_t* state_buf = malloc((size_t) state_size);
+	CHECK(mcbamgba_save_state(state_buf, state_size) == MCBAMGBA_OK, "save_state succeeds");
+
+	mcbamgba_bus_write8(0x03000000, 0x99);
+	CHECK(mcbamgba_bus_read8(0x03000000) == 0x99, "mutation after save_state took effect");
+
+	CHECK(mcbamgba_load_state(state_buf, state_size) == MCBAMGBA_OK, "load_state succeeds");
+	CHECK(mcbamgba_bus_read8(0x03000000) == 0x42,
+	      "load_state restores the value from the save point");
+	free(state_buf);
 
 	/* Reset should bring PC back to its just-loaded state, before the
 	 * fixture's entry-point branch has executed. */
